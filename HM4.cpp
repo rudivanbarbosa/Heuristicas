@@ -3,8 +3,8 @@
 #include <fstream>
 #include <string>
 #include <cstdlib>
-#include <stdio.h>
-#include <time.h>
+#include <cstdio>
+#include <ctime>
 #include <set>
 #include <vector>
 
@@ -13,1127 +13,612 @@ ILOSTLBEGIN
 #define BILLION 1000000000L
 
 /*-----------------------------------------------------------------------------------------------------------------------------------------
-    Declaracao de variaveis
+    Cronometro: tempo (em segundos) desde a ultima chamada de reinicia()
 -------------------------------------------------------------------------------------------------------------------------------------------
 */
-IloEnv env;
-int i, j, p, n, t, alpha; // contadores
-int N; // número total de pedidos
-int J; // número total de produtos
-int T; // número total de períodos
-int aux = 0;
-int aux2 =0;
-double execTime;
-double temporestante;
-double TiLim = 100;
-double atualFO;
-double MelhorFO=-999999;
+class Cronometro {
+    timespec_t inicio;
 
-int myMax(int a, int b){
-    if (a >= b) return a;
-    else return b;
-}
-
-ILOMIPINFOCALLBACK2(logTimeCallback,timespec_t, startTime, const string, nome)
-{
-  FILE *arq;
-
-arq = fopen(nome.c_str(), "a");
-
-    // Tempo atual
-    timespec_t currTime;
-    clock_gettime(CLOCK_MONOTONIC, &currTime);
-
-    // Tempo de execucao
-    execTime = (currTime.tv_sec - startTime.tv_sec) + (double)(currTime.tv_nsec - startTime.tv_nsec)/BILLION;
-
-
-    if (!hasIncumbent()) {
-        fprintf(arq, " %.2f\n", execTime);
-    } else {
-        fprintf(arq, " %.2f %.f\n", execTime, getIncumbentObjValue());
+public:
+    void reinicia(){
+        clock_gettime(CLOCK_MONOTONIC, &inicio);
     }
-    fclose(arq);
-}
 
-int main(int argc, char **argv){
+    double decorrido() const {
+        timespec_t agora;
+        clock_gettime(CLOCK_MONOTONIC, &agora);
+        return (agora.tv_sec - inicio.tv_sec) + (double)(agora.tv_nsec - inicio.tv_nsec)/BILLION;
+    }
+};
 
+/*-----------------------------------------------------------------------------------------------------------------------------------------
+    Instancia: dados do problema, lidos do arquivo
+-------------------------------------------------------------------------------------------------------------------------------------------
+*/
+class Instancia {
+public:
+    int N; // numero total de pedidos
+    int J; // numero total de produtos
+    int T; // numero total de periodos
 
-std::set<int> conjunto;
-try{
+    IloArray<IloNumArray> q;  // q[j][n]: demanda do item j no pedido n
+    IloArray<IloNumArray> sc; // sc[i][j]: custo de troca (preparacao da maquina) da producao do item i para o item j
+    IloArray<IloNumArray> st; // st[i][j]: tempo de troca (preparacao da maquina) da producao do item i para o item j
+    IloNumArray F;            // F[n]: primeiro periodo da janela de entrega do pedido n
+    IloNumArray L;            // L[n]: ultimo periodo da janela de entrega do pedido n
+    IloNumArray C;            // C[t]: capacidade (tempo) de producao do periodo t
+    IloNumArray a;            // a[j]: tempo para producao de uma unidade do item j
+    IloNumArray h;            // h[j]: custo de estoque do item j (por unidade e por periodo em estoque)
+    IloArray<IloNumArray> P;  // P[n][t]: receita associada ao pedido n se ele for entregue no periodo t
+    IloNumArray sl;           // sl[j]: tempo maximo de estoque do item j (shelf-life), em periodos
 
-        // leitura dos dados
-        ifstream entrada(argv[1]);
-        string nome(argv[2]);
+    Instancia(IloEnv env, const char *arquivo){
+        ifstream entrada(arquivo);
         entrada >> J;
         entrada >> T;
         entrada >> N;
 
-
-        //demanda do item j no pedido n
-        IloArray<IloNumArray> q(env, J);
-		for ( j=0; j<J; ++j)
-		{
-        q[j] = IloNumArray (env,N);
-		}
-            for (n = 0; n < N; n++)
-                for (j = 0; j < J; j++)
+        q = IloArray<IloNumArray>(env, J);
+        for (int j = 0; j < J; j++)
+            q[j] = IloNumArray(env, N);
+        for (int n = 0; n < N; n++)
+            for (int j = 0; j < J; j++)
                 entrada >> q[j][n];
 
-
-
-        //custo de troca da produção do item i para o item j
-        IloArray<IloNumArray> sc(env, J);
-		for ( i=0; i<J; ++i)
-		{
-        sc[i] = IloNumArray (env,J);
-		}
-        //tempo de setup da produção do item i para o item j
-        IloArray<IloNumArray> st(env, J);
-		for ( i=0; i<J; ++i)
-		{
-        st[i] = IloNumArray (env,J);
-		}
-            for(i = 0; i < J; i++){
-                for( j = 0; j < J; j++){
+        sc = IloArray<IloNumArray>(env, J);
+        st = IloArray<IloNumArray>(env, J);
+        for (int i = 0; i < J; i++){
+            sc[i] = IloNumArray(env, J);
+            st[i] = IloNumArray(env, J);
+        }
+        for (int i = 0; i < J; i++)
+            for (int j = 0; j < J; j++){
                 entrada >> sc[i][j];
                 entrada >> st[i][j];
-                    }
-                        }
-
-		//primeiro período da janela de entrega do pedido n
-       IloNumArray F(env, N);
-         //último período da janela de entrego do pedido n
-       IloNumArray L(env, N);
-        for( n = 0; n < N; n++){
-        entrada >> F[n];
-        entrada >> L[n];
-                }
-
-         //capacidade (tempo) de produção do período t
-        IloNumArray C(env, T);
-        for (t = 0; t < T; t++)
-        entrada >> C[t];
-
-
-        //tempo de produção do item j
-       IloNumArray a(env, J);
-        for (j = 0; j < J; j++)
-        entrada >> a[j];
-
-        //custo de estoque do item j por unidade
-       IloNumArray h(env, J);
-        for (j = 0; j < J; j++)
-        entrada >> h[j];
-
-        //lucro associado ao pedido n no período t
-        IloArray<IloNumArray> P (env, N);
-		for ( n=0; n<N; ++n)
-		{
-		P[n] = IloNumArray(env,T);
-		}
-            for (n = 0; n < N; n++){
-				for (t = 0; t < T; t++)
-					entrada >> P[n][t];
-                            }
-
-
-        //tempo máximo de estoque do item j
-       IloNumArray sl(env, J);
-        for (j = 0; j < J; j++)
-        entrada >> sl[j];
-
-
-
-
-        IloModel modelo1(env);
-
-
-//// 1 se o pedido n vai ser atendido no período t e 0, caso contrário
-        IloArray<IloBoolVarArray> gama(env, N);
-		for ( n = 0 ; n < N ; n++ ){
-			gama[n] = IloBoolVarArray(env, T);
-                                }
-
-
-        IloArray<IloNumArray> atualgama(env, N);
-		for ( n = 0 ; n < N ; n++ ){
-			atualgama[n] = IloNumArray(env, T);
-                                }
-
-        IloArray<IloNumArray> melhorgama(env, N);
-		for ( n = 0 ; n < N ; n++ ){
-			melhorgama[n] = IloNumArray(env, T);
-                                }
-
-
-IloArray< IloArray<IloNumVarArray> >  x(env, J);
-            for ( j = 0 ; j < J ; j++ ){
-			x[j] = IloArray<IloNumVarArray> (env, T);
-                for ( t = 0 ; t < T ; t++ ){
-                x[j][t] = IloNumVarArray(env, T,0,IloInfinity);
-                }
-                    }
-
-    IloArray< IloArray<IloNumArray> >  atualx(env, J);
-            for ( j = 0 ; j < J ; j++ ){
-			atualx[j] = IloArray<IloNumArray> (env, T);
-                for ( t = 0 ; t < T ; t++ ){
-                atualx[j][t] = IloNumArray(env, T);
-                }
-                    }
-
-            IloArray< IloArray<IloNumArray> >  melhorx(env, J);
-            for ( j = 0 ; j < J ; j++ ){
-			melhorx[j] = IloArray<IloNumArray> (env, T);
-                for ( t = 0 ; t < T ; t++ ){
-                melhorx[j][t] = IloNumArray(env, T);
-                }
-                    }
-
-//// 1 se a máquina está preparada para a produção do item j no início do período t e 0, caso contrário
-        IloArray<IloBoolVarArray> y(env, J);
-		for ( j = 0 ; j < J ; j++ ){
-			y[j] = IloBoolVarArray(env, T+1);
-                                }
-
-                IloArray<IloNumArray> atualy(env, J);
-		for ( j = 0 ; j < J ; j++ ){
-			atualy[j] = IloNumArray(env, T+1);
-                                }
-
-                IloArray<IloNumArray> melhory(env, J);
-		for ( j = 0 ; j < J ; j++ ){
-			melhory[j] = IloNumArray(env, T+1);
-                                }
-
-//// 1 se ocorre troca da produção do item i para o item j durante o período t e 0, caso contrário
-IloArray< IloArray<IloBoolVarArray> >  z(env, J);
-            for ( i = 0 ; i < J ; i++ ){
-			z[i] = IloArray<IloBoolVarArray> (env, J);
-                for ( j = 0 ; j < J ; j++ ){
-                z[i][j] = IloBoolVarArray(env, T);
-                }
-                    }
-
-
-                  IloArray< IloArray<IloNumArray> >  atualz(env, J);
-            for ( i = 0 ; i < J ; i++ ){
-			atualz[i] = IloArray<IloNumArray> (env, J);
-                for ( j = 0 ; j < J ; j++ ){
-                atualz[i][j] = IloNumArray(env, T);
-                }
-                    }
-
-
-            IloArray< IloArray<IloNumArray> >  melhorz(env, J);
-            for ( i = 0 ; i < J ; i++ ){
-			melhorz[i] = IloArray<IloNumArray> (env, J);
-                for ( j = 0 ; j < J ; j++ ){
-                melhorz[i][j] = IloNumArray(env, T);
-                }
-                    }
-
-////variável auxiliar que representa a ordem de produção do item j no período t.
-            IloArray<IloNumVarArray> V(env, J);{
-            for ( j = 0 ; j < J ; j++ )
-            V[j] = IloNumVarArray(env, T, 0,IloInfinity);
             }
 
-
-             IloArray<IloNumArray> atualV(env, J);{
-            for ( j = 0 ; j < J ; j++ )
-            atualV[j] = IloNumArray(env, T);
-            }
-
-
-            IloArray<IloNumArray> melhorV(env, J);{
-            for ( j = 0 ; j < J ; j++ )
-            melhorV[j] = IloNumArray(env, T);
-            }
-
-
-
-
-//Funcao objetivo
-IloExpr fo1(env);
-
-            for( n=0;n<N; n++){
-                for( t= F[n];t<=L[n];t++){
-                fo1 += P[n][t]*gama[n][t];
-                            }
-                                }
-
-
-                    for ( j = 0 ; j < J ; j++ ){
-                         for ( t = 0 ; t < T; t++ ){
-
-                            for ( p=t+1 ; p< T  ; p++ ){
-                                fo1 += - h[j]*(p-t)*x[j][t][p];
-                                    }
-                                        }
-                                            }
-
-
-                for ( t = 0 ; t < T ; t++ ){
-                    for ( i = 0 ; i < J ; i++){
-                        for ( j = 0 ; j < J ; j++){
-                        fo1 += - sc[i][j]*z[i][j][t];
-                        }
-                            }
-                                }
-
-modelo1.add(IloMaximize(env, fo1));
-fo1.end();
-
-
-/////////////////////////////////////////////////////RESTRIÇÕES////////////////////////////////////////////////////
-
-//Restrição 1
-
-IloExpr Expr1(env);
-IloExpr Expr2(env);
-    for ( j = 0 ; j < J ; j++ ){
-            for ( p = 0 ; p < T ; p++ ){
-
-                for ( t = myMax(0,p-sl[j]) ; t <= p; t++ ){
-                        Expr1 += x[j][t][p];
-                                }
-
-                    for ( n = 0 ; n < N ; n++ ){
-                    Expr2 += q[j][n]*gama[n][p];
-                    }
-            modelo1.add(Expr1 == Expr2);
-            Expr1.end();
-            Expr1 = IloExpr(env);
-            Expr2.end();
-            Expr2 = IloExpr(env);
-            }
-                }
-
-// Restrição 2
-IloExpr Expr7(env);
-        for ( t = 0 ; t < T ; t++ ){
-			for ( i = 0 ; i < J ; i++ ){
-				for ( j = 0 ; j < J ; j++ ){
-						Expr7 += st[i][j]*z[i][j][t];
-                                }
-                        }
-			for(j=0; j<J; j++){
-                for(p=0; p<T; p++){
-			     Expr7 += a[j]*x[j][t][p] ;
-			     }
-			}
-                modelo1.add(Expr7 <= C[t] );
-				Expr7.end();
-				Expr7 = IloExpr(env);
-
+        F = IloNumArray(env, N);
+        L = IloNumArray(env, N);
+        for (int n = 0; n < N; n++){
+            entrada >> F[n];
+            entrada >> L[n];
         }
-//   Restrição 3
-IloExpr Expr8(env);
-        for ( t = 0 ; t < T ; t++ ){
-		for ( j = 0 ; j < J ; j++ ){
-						Expr8 += y[j][t];
-					}
-						modelo1.add(Expr8 == 1);
-						Expr8.end();
-                        Expr8 = IloExpr(env);
-                        }
 
-// Restrição 4
-IloExpr Expr9(env);
-IloExpr Expr10(env);
-		for ( t = 0 ; t < T ; t++ ){
-		for ( j = 0 ; j < J ; j++ ){
-            for ( i = 0 ; i < J ; i++ ){
-            if(i!=j){
-			Expr9 += z[i][j][t] ;
-			Expr10 += z[j][i][t] ;
-			}
-			}
-			modelo1.add(y[j][t] + Expr9 == Expr10 + y[j][t+1]);
-            Expr9.end();
-            Expr9 = IloExpr(env);
-            Expr10.end();
-			Expr10 = IloExpr(env);
-		}
+        C = IloNumArray(env, T);
+        for (int t = 0; t < T; t++)
+            entrada >> C[t];
 
-		}
+        a = IloNumArray(env, J);
+        for (int j = 0; j < J; j++)
+            entrada >> a[j];
 
+        h = IloNumArray(env, J);
+        for (int j = 0; j < J; j++)
+            entrada >> h[j];
 
-//  Restrição 5
-    IloExpr Expr13(env);
-    IloExpr Expr14(env);
-        for ( t = 0 ; t < T ; t++ ){
-			for ( j = 0 ; j < J ; j++ ){
-                    for ( i = 0 ; i < J ; i++ ){
-                            if(j!=i){
-							Expr13 += z[i][j][t];
-                                    }
-                                        }
-                             for ( p = 0 ; p < T ; p++ ){
-                            Expr14+= x[j][t][p] ;
-                            }
-                            for ( i = 0 ; i < J ; i++ ){
-                            modelo1.add(Expr14 <= (C[t]/a[j])*(y[j][t] + Expr13) -(st[i][j]/a[j])*Expr13) ;
-                                                    }
-                                Expr13.end();
-                                Expr13 = IloExpr(env);
-                                Expr14.end();
-                                Expr14 = IloExpr(env);
-                                                    }
+        P = IloArray<IloNumArray>(env, N);
+        for (int n = 0; n < N; n++)
+            P[n] = IloNumArray(env, T);
+        for (int n = 0; n < N; n++)
+            for (int t = 0; t < T; t++)
+                entrada >> P[n][t];
 
+        sl = IloNumArray(env, J);
+        for (int j = 0; j < J; j++)
+            entrada >> sl[j];
+    }
+};
 
-                                                        }
-        //Restrição 6
-        for ( t = 0 ; t < T ; t++ ){
-			for ( i = 0 ; i < J ; i++ ){
-			if(j!=i){
-			for ( j = 0 ; j < J ; j++ ){
+/*-----------------------------------------------------------------------------------------------------------------------------------------
+    Solucao: valores das variaveis que a heuristica usa para guardar a melhor solucao
+-------------------------------------------------------------------------------------------------------------------------------------------
+*/
+class Solucao {
+public:
+    vector< vector<double> > gama;       // gama[n][t]
+    vector< vector<double> > y;          // y[j][t]
+    vector< vector< vector<double> > > z; // z[i][j][t]
 
-				modelo1.add(V[j][t] >= V[i][t] + 1 - J*(1 - z[i][j][t]));
-                            }
-			}
-		}
-		}
-//Restrição 7
-IloExpr Expr15(env);
-        for ( n = 0 ; n < N ; n++ ){
-						for( t = F[n] ; t <= L[n] ; t++ ){
-							Expr15+= gama[n][t];
-						}
-						modelo1.add(Expr15 <= 1);
-                        Expr15.end();
-                        Expr15 = IloExpr(env);
+    Solucao(const Instancia &d)
+        : gama(d.N, vector<double>(d.T)),
+          y(d.J, vector<double>(d.T)),
+          z(d.J, vector< vector<double> >(d.J, vector<double>(d.T))) {}
+};
 
-					}
+/*-----------------------------------------------------------------------------------------------------------------------------------------
+    Modelo: variaveis, funcao objetivo e restricoes do problema
+-------------------------------------------------------------------------------------------------------------------------------------------
+*/
+class Modelo {
+    IloEnv env;
+    const Instancia &d;
 
-  //Restrição 8
-  for ( n = 0 ; n < N ; n++ ){
-  for ( t = 0 ; t < T ; t++ ){
-            if(t< F[n] || t > L[n])
-				modelo1.add(gama[n][t] == 0);
-				}
-				}
+public:
+    // gama[n][t]: 1 se o pedido n vai ser atendido (entregue por inteiro, sem entrega parcial)
+    // no periodo t e 0, caso contrario. Binaria.
+    IloArray<IloBoolVarArray> gama;
 
+    // x[j][t][p]: quantidade do item j produzida no periodo t para ser entregue no periodo p.
+    // A idade do produto na entrega e p - t. Continua, x >= 0.
+    IloArray< IloArray<IloNumVarArray> > x;
+
+    // y[j][t]: 1 se a maquina esta preparada para a producao do item j no inicio do periodo t
+    // e 0, caso contrario (o indice t+1 e usado na restricao de fluxo). Binaria.
+    IloArray<IloBoolVarArray> y;
+
+    // z[i][j][t]: 1 se ocorre troca da producao do item i para o item j durante o periodo t
+    // e 0, caso contrario. Binaria.
+    IloArray< IloArray<IloBoolVarArray> > z;
+
+    // V[j][t]: variavel auxiliar que representa a ordem de producao do item j no periodo t;
+    // usada para evitar subciclos desconexos nas trocas. Continua, V >= 0.
+    IloArray<IloNumVarArray> V;
+
+    Modelo(IloEnv e, const Instancia &inst) : env(e), d(inst) {
+        gama = IloArray<IloBoolVarArray>(env, d.N);
+        for (int n = 0; n < d.N; n++)
+            gama[n] = IloBoolVarArray(env, d.T);
+
+        x = IloArray< IloArray<IloNumVarArray> >(env, d.J);
+        for (int j = 0; j < d.J; j++){
+            x[j] = IloArray<IloNumVarArray>(env, d.T);
+            for (int t = 0; t < d.T; t++)
+                x[j][t] = IloNumVarArray(env, d.T, 0, IloInfinity);
+        }
+
+        y = IloArray<IloBoolVarArray>(env, d.J);
+        for (int j = 0; j < d.J; j++)
+            y[j] = IloBoolVarArray(env, d.T+1);
+
+        z = IloArray< IloArray<IloBoolVarArray> >(env, d.J);
+        for (int i = 0; i < d.J; i++){
+            z[i] = IloArray<IloBoolVarArray>(env, d.J);
+            for (int j = 0; j < d.J; j++)
+                z[i][j] = IloBoolVarArray(env, d.T);
+        }
+
+        V = IloArray<IloNumVarArray>(env, d.J);
+        for (int j = 0; j < d.J; j++)
+            V[j] = IloNumVarArray(env, d.T, 0, IloInfinity);
+    }
+
+    IloModel construir(){
+        IloModel modelo(env);
+
+        //Funcao objetivo: maximizar o lucro, isto e,
+        //   receitas dos pedidos atendidos:           soma de P[n][t]*gama[n][t], para t na janela [F[n], L[n]]
+        // - custo de estoque (idade do produto):      soma de h[j]*(p-t)*x[j][t][p], para p > t
+        //                                             (cada unidade produzida em t e entregue em p paga h[j] por periodo estocado)
+        // - custos de preparacao da maquina:          soma de sc[i][j]*z[i][j][t] (dependentes da sequencia de producao).
+        IloExpr fo(env);
+
+        for (int n = 0; n < d.N; n++)
+            for (int t = d.F[n]; t <= d.L[n]; t++)
+                fo += d.P[n][t]*gama[n][t];
+
+        for (int j = 0; j < d.J; j++)
+            for (int t = 0; t < d.T; t++)
+                for (int p = t+1; p < d.T; p++)
+                    fo += - d.h[j]*(p-t)*x[j][t][p];
+
+        for (int t = 0; t < d.T; t++)
+            for (int i = 0; i < d.J; i++)
+                for (int j = 0; j < d.J; j++)
+                    fo += - d.sc[i][j]*z[i][j][t];
+
+        modelo.add(IloMaximize(env, fo));
+        fo.end();
+
+        IloExpr Expr1(env);
+        IloExpr Expr2(env);
+
+        //Atendimento da demanda: producao dos itens que compoem os pedidos aceitos.
+        //Para cada item j e periodo p, o que e entregue em p (soma dos x[j][t][p]) deve vir de producao feita
+        //entre os periodos p - sl[j] e p (respeita o shelf-life) e ser igual a demanda de j nos pedidos
+        //atendidos em p (soma de q[j][n]*gama[n][p]).
+        for (int j = 0; j < d.J; j++){
+            for (int p = 0; p < d.T; p++){
+                int inicio = (int)(p - d.sl[j]);
+                if (inicio < 0) inicio = 0;
+                for (int t = inicio; t <= p; t++)
+                    Expr1 += x[j][t][p];
+
+                for (int n = 0; n < d.N; n++)
+                    Expr2 += d.q[j][n]*gama[n][p];
+
+                modelo.add(Expr1 == Expr2);
+                Expr1.clear();
+                Expr2.clear();
+            }
+        }
+
+        // Capacidade: limite de capacidade produtiva de cada periodo t.
+        // O tempo de producao (a[j]*x) mais o tempo de preparacao das trocas (st[i][j]*z) nao pode exceder C[t].
+        for (int t = 0; t < d.T; t++){
+            for (int i = 0; i < d.J; i++)
+                for (int j = 0; j < d.J; j++)
+                    Expr1 += d.st[i][j]*z[i][j][t];
+
+            for (int j = 0; j < d.J; j++)
+                for (int p = 0; p < d.T; p++)
+                    Expr1 += d.a[j]*x[j][t][p];
+
+            modelo.add(Expr1 <= d.C[t]);
+            Expr1.clear();
+        }
+
+        //   Preparacao unica: em cada periodo t, a maquina esta preparada
+        //   para um unico item no inicio do periodo (o primeiro a ser produzido).
+        for (int t = 0; t < d.T; t++){
+            for (int j = 0; j < d.J; j++)
+                Expr1 += y[j][t];
+            modelo.add(Expr1 == 1);
+            Expr1.clear();
+        }
+
+        // Fluxo: o estado y[j][t] mais as trocas que chegam
+        // ao item j e igual as trocas que saem de j mais o estado y[j][t+1] no inicio do periodo seguinte.
+        // (No codigo as somas em i excluem i = j.)
+        for (int t = 0; t < d.T; t++){
+            for (int j = 0; j < d.J; j++){
+                for (int i = 0; i < d.J; i++){
+                    if (i != j){
+                        Expr1 += z[i][j][t];
+                        Expr2 += z[j][i][t];
+                    }
+                }
+                modelo.add(y[j][t] + Expr1 == Expr2 + y[j][t+1]);
+                Expr1.clear();
+                Expr2.clear();
+            }
+        }
+
+        //  Ligacao entre producao e preparacao: o item j so pode ser produzido
+        //  em t se a maquina estiver preparada para ele (y[j][t] = 1) ou se houver troca para ele em t (soma de z[i][j][t]);
+        //  o tempo de troca st[i][j] e descontado da capacidade C[t]. A constante C[t]/a[j] e o big-M.
+        for (int t = 0; t < d.T; t++){
+            for (int j = 0; j < d.J; j++){
+                for (int i = 0; i < d.J; i++)
+                    if (j != i)
+                        Expr2 += z[i][j][t];
+
+                for (int p = 0; p < d.T; p++)
+                    Expr1 += x[j][t][p];
+
+                for (int i = 0; i < d.J; i++)
+                    modelo.add(Expr1 <= (d.C[t]/d.a[j])*(y[j][t] + Expr2) - (d.st[i][j]/d.a[j])*Expr2);
+
+                Expr2.clear();
+                Expr1.clear();
+            }
+        }
+
+        //Ordem de producao (tipo MTZ): ordem dos itens em cada periodo.
+        //Se ha troca de i para j em t (z[i][j][t] = 1), entao V[j][t] >= V[i][t] + 1, o que captura a ordem
+        //de producao e evita subciclos desconexos.
+        //OBS.: o codigo original tinha um "if(j!=i)" fora do laco de j, que usava o j global (sempre igual a J
+        //nesse ponto), logo a condicao era sempre verdadeira e as restricoes sao criadas tambem para i == j.
+        //O comportamento foi mantido.
+        for (int t = 0; t < d.T; t++)
+            for (int i = 0; i < d.J; i++)
+                for (int j = 0; j < d.J; j++)
+                    modelo.add(V[j][t] >= V[i][t] + 1 - d.J*(1 - z[i][j][t]));
+
+        //Atendimento unico: cada pedido n pode ser atendido no maximo uma vez
+        //durante o horizonte de planejamento (dentro da sua janela de entrega [F[n], L[n]]).
+        for (int n = 0; n < d.N; n++){
+            for (int t = d.F[n]; t <= d.L[n]; t++)
+                Expr1 += gama[n][t];
+            modelo.add(Expr1 <= 1);
+            Expr1.clear();
+        }
+
+        //Janela de atendimento: gama[n][t] = 0 para t < F[n] ou t > L[n].
+        for (int n = 0; n < d.N; n++)
+            for (int t = 0; t < d.T; t++)
+                if (t < d.F[n] || t > d.L[n])
+                    modelo.add(gama[n][t] == 0);
+
+        Expr1.end();
+        Expr2.end();
+        return modelo;
+    }
+
+    // Relaxacao linear: gama, y e z passam a ser continuas
+    IloModel relaxar(IloModel base){
+        IloModel relax(env);
+        relax.add(base);
+
+        for (int n = 0; n < d.N; n++)
+            for (int t = 0; t < d.T; t++)
+                relax.add(IloConversion(env, gama[n][t], ILOFLOAT));
+
+        for (int j = 0; j < d.J; j++)
+            for (int t = 0; t < d.T+1; t++)
+                relax.add(IloConversion(env, y[j][t], ILOFLOAT));
+
+        for (int i = 0; i < d.J; i++)
+            for (int j = 0; j < d.J; j++)
+                for (int t = 0; t < d.T; t++)
+                    relax.add(IloConversion(env, z[i][j][t], ILOFLOAT));
+
+        return relax;
+    }
+
+    // Le da solucao do CPLEX os valores de y, gama e z
+    void le(IloCplex &cplex, Solucao &s){
+        for (int j = 0; j < d.J; j++)
+            for (int t = 0; t < d.T; t++)
+                s.y[j][t] = cplex.getValue(y[j][t]);
+
+        for (int n = 0; n < d.N; n++)
+            for (int t = 0; t < d.T; t++)
+                s.gama[n][t] = cplex.getValue(gama[n][t]);
+
+        for (int i = 0; i < d.J; i++)
+            for (int j = 0; j < d.J; j++)
+                for (int t = 0; t < d.T; t++)
+                    s.z[i][j][t] = cplex.getValue(z[i][j][t]);
+    }
+
+    // Fixa em 1 os gama que valem 1 na solucao s
+    void fixaPedidos(const Solucao &s){
+        for (int n = 0; n < d.N; n++)
+            for (int t = 0; t < d.T; t++)
+                if (s.gama[n][t] >= 0.5){
+                    gama[n][t].setLB(1);
+                    gama[n][t].setUB(1);
+                }
+    }
+
+    // Libera os gama: volta aos limites originais [0, 1]
+    void liberaPedidos(){
+        for (int n = 0; n < d.N; n++)
+            for (int t = 0; t < d.T; t++){
+                gama[n][t].setLB(0);
+                gama[n][t].setUB(1);
+            }
+    }
+
+    // Fixa em 1 os y e z que valem 1 na solucao s (melhores sequencias)
+    void fixaSequencia(const Solucao &s){
+        for (int j = 0; j < d.J; j++)
+            for (int t = 0; t < d.T; t++)
+                if (s.y[j][t] >= 0.5){
+                    y[j][t].setLB(1);
+                    y[j][t].setUB(1);
+                }
+
+        for (int i = 0; i < d.J; i++)
+            for (int j = 0; j < d.J; j++)
+                for (int t = 0; t < d.T; t++)
+                    if (s.z[i][j][t] >= 0.5){
+                        z[i][j][t].setLB(1);
+                        z[i][j][t].setUB(1);
+                    }
+    }
+};
+
+/*-----------------------------------------------------------------------------------------------------------------------------------------
+    HeuristicaM4: os pedidos sao ordenados pelo custo reduzido de gama na relaxacao linear (nao-crescente) e aceitos um a um,
+    mantendo cada pedido apenas se a solucao melhorar.
+    Depois, a FASE 2 resolve o modelo completo com o tempo restante.
+-------------------------------------------------------------------------------------------------------------------------------------------
+*/
+const double LIMITE_FASE1 = 1800; // tempo limite do laco da FASE 1, em segundos
+const double TILIM = 100;         // tempo limite de cada resolucao do CPLEX na FASE 1
+const double DIVISOR_FASE2 = 4;   // a FASE 2 usa (3600 - tempo da FASE 1)/DIVISOR_FASE2 como limite
+
+class HeuristicaM4 {
+    IloEnv env;
+    const Instancia &d;
+    Modelo &modelo;
+    Cronometro relogio;
+
+    double melhorFO;
+    Solucao atual, melhor;
+
+    // Ordena os valores v em forma decrescente, acompanhando o vetor de indices idx (se nao for nulo).
+    // O valor trocado passa por um int, como no codigo original (trunca a parte fracionaria).
+    static void ordenaDecrescente(vector<double> &v, vector<int> *idx){
+        int aux;
+        int aux2;
+        for (size_t i = 0; i < v.size(); i++){
+            for (size_t j = 0; j < v.size(); j++){
+                if (v[j] < v[i]){
+                    aux = v[j];
+                    v[j] = v[i];
+                    v[i] = aux;
+                    if (idx){
+                        aux2 = (*idx)[j];
+                        (*idx)[j] = (*idx)[i];
+                        (*idx)[i] = aux2;
+                    }
+                }
+            }
+        }
+    }
+
+    // Pedidos em ordem nao-crescente do melhor custo reduzido de gama na relaxacao linear
+    vector<int> ordenaPorCustoReduzido(IloCplex &relax){
+        vector<double> melhoresRC(d.N, 0);
+        vector<int> pedidos(d.N);
+
+        for (int n = 0; n < d.N; n++){
+            //Captura os custos reduzidos de todos periodos em cada pedido
+            vector<double> rc(d.T);
+            for (int t = 0; t < d.T; t++)
+                rc[t] = relax.getReducedCost(modelo.gama[n][t]);
+
+            //Captura os melhores custos reduzidos de cada pedido
+            ordenaDecrescente(rc, NULL);
+
+            melhoresRC[n] = rc[0];
+            pedidos[n] = n;
+        }
+
+        ordenaDecrescente(melhoresRC, &pedidos);
+        return pedidos;
+    }
+
+    // Remove as restricoes de "pedido nao atendido" adicionadas para o teste
+    void removeZeros(IloModel &modelo1, IloConstraintArray &adicionarzero){
+        for (int n = 0; n < d.N; n++)
+            modelo1.remove(adicionarzero[n]);
+    }
+
+    // FASE 2: resolve o modelo completo com o tempo restante, fixando pedidos e depois sequencias
+    void fase2(double tempo1){
+        IloModel modelo2 = modelo.construir();
+        IloCplex cplex2(env);
+        cplex2.extract(modelo2);
+        cplex2.setParam(IloCplex::Param::TimeLimit, (3600 - tempo1)/DIVISOR_FASE2);
+
+        //Inicio da FASE 2
+        //Primeira resolucao: se melhorar, fixa os melhores pedidos
+        if (cplex2.solve()){
+            modelo.le(cplex2, atual);
+
+            if (cplex2.getObjValue() >= melhorFO){
+                melhorFO = cplex2.getObjValue();
+                melhor = atual;
+
+                //MELHORES PEDIDOS
+                modelo.fixaPedidos(melhor);
+            }
+        }
+
+        //Segunda resolucao: se melhorar, libera os pedidos e fixa as melhores sequencias
+        if (cplex2.solve()){
+            modelo.le(cplex2, atual);
+
+            if (cplex2.getObjValue() >= melhorFO){
+                melhorFO = cplex2.getObjValue();
+                melhor = atual;
+
+                modelo.liberaPedidos();
+
+                //MELHORES SEQUENCIAS
+                modelo.fixaSequencia(melhor);
+            }
+        }
+
+        //Terceira resolucao: resultado final
+        bool resolveu = cplex2.solve();
+        double tempo2 = relogio.decorrido() - tempo1;
+
+        if (resolveu && cplex2.getObjValue() >= melhorFO)
+            melhorFO = cplex2.getObjValue();
+
+        printf(" Melhor solucao encontrada na FASE 2: %.f \n", melhorFO);
+        printf(" Tempo de execucao da FASE 2: %.2f \n", tempo2);
+    }
+
+public:
+    HeuristicaM4(IloEnv e, const Instancia &inst, Modelo &m)
+        : env(e), d(inst), modelo(m), melhorFO(-999999), atual(inst), melhor(inst) {}
+
+    void executa(){
+        IloModel modelo1 = modelo.construir();
 
         IloCplex fase1(modelo1);
         fase1.extract(modelo1);
-        fase1.setParam(IloCplex::Param::TimeLimit,TiLim);
+        fase1.setParam(IloCplex::Param::TimeLimit, TILIM);
 
+        //Resolver o problema relaxado
+        IloModel relax = modelo.relaxar(modelo1);
+        IloCplex RELAX(relax);
+        if (!RELAX.solve()){
+            env.error() << "Nao se pode resolver" << endl;
+            throw(-1);
+        }
 
+        vector<int> vetor = ordenaPorCustoReduzido(RELAX);
 
-        IloModel relax(env);
-        relax.add(modelo1);
+        relogio.reinicia();
 
-         for ( n = 0 ; n < N ; n++ ){
-            for ( t = 0 ; t < T ; t++ ){
-                relax.add(IloConversion(env, gama[n][t], ILOFLOAT));
-                    }
-                        }
-            for ( j = 0 ; j < J ; j++ ){
-            for ( t = 0 ; t < T+1 ; t++ ){
-                relax.add(IloConversion(env, y[j][t], ILOFLOAT));
-                    }
-                        }
-            for ( i = 0 ; i < J ; i++ ){
-            for ( j = 0 ; j < J ; j++ ){
-            for ( t = 0 ; t < T ; t++ ){
-                relax.add(IloConversion(env, z[i][j][t], ILOFLOAT));
-                    }
-                        }
-                            }
-    IloCplex RELAX(relax);
+        std::set<int> conjunto;
 
-    //Resolver o problema relaxado
-    if(!RELAX.solve()){
-    env.error() << "Nao se pode resolver" << endl;
-    throw(-1);
-    }
+        //Heuristica - FO5
+        for (int k = 0; k < d.N && relogio.decorrido() <= LIMITE_FASE1; k++){
 
-        int vetor[N];
-        double VetorRC[T];
-        double MelhoresRC[N];
+            // Adicionar restricao no modelo fixada em 1
+            IloExpr restricao1(env);
+            for (int t = d.F[vetor[k]]; t <= d.L[vetor[k]]; t++)
+                restricao1 += modelo.gama[vetor[k]][t];
 
-        for (n= 0; n< N; n++){
-            //Captura os custos reduzidos de todos períodos em cada pedido
-            for (t= 0; t< T; t++){
-                    VetorRC[t] = RELAX.getReducedCost(gama[n][t]);
+            IloConstraint adicionarum = restricao1 == 1;
+            modelo1.add(adicionarum);
+            restricao1.end();
+            conjunto.insert(vetor[k]);
 
-                    }
+            // Adicionar restricao fixando em zero os pedidos que ainda nao foram aceitos
+            IloConstraintArray adicionarzero(env, d.N);
+            for (int n = 0; n < d.N; n++){
+                IloExpr restricao0(env);
+                for (int t = d.F[n]; t <= d.L[n]; t++)
+                    restricao0 += modelo.gama[n][t];
 
+                adicionarzero[n] = restricao0 == 0;
+                restricao0.end();
 
-                //Captura os melhores  custos reduzidos de cada pedido
-                for (i=0; i<T; i++){
-                   for(j=0; j<T; j++){
-                        if(VetorRC[j] < VetorRC[i] ){
-                            aux = VetorRC[j];
-                            VetorRC[j] = VetorRC[i];
-                            VetorRC[i] = aux;
-
-                                    }
-                                        }
-                                            }
-
-                                            MelhoresRC[n] = VetorRC[0];
-                                            vetor[n] = n;
-
-                                                    }
-//Ordena os vetor dos custos reduzidos em forma não-crescente
-    for (i=0; i<N; i++){
-       for(j=0; j<N; j++){
-            if(MelhoresRC[j] < MelhoresRC[i] ){
-                aux = MelhoresRC[j];
-                MelhoresRC[j] = MelhoresRC[i];
-                MelhoresRC[i] = aux;
-                aux2 = vetor[j];
-                vetor[j] = vetor[i];
-                vetor[i] = aux2;
-
-                        }
-                            }
-                                }
-
-
-
-
-    timespec_t startTime;
-    clock_gettime(CLOCK_MONOTONIC, &startTime);
-    fase1.use(logTimeCallback(env, startTime, nome));
-    double tempo;
-
-
-
-//Heuristica - FO5
-for (int k=0; k< N && execTime <= 1800; k++){
-
-        // Adicionar restricao no modelo fixada em 1
-
-                IloExpr restricao1 (env);
-                for(t=F[vetor[k]]; t<=L[vetor[k]]; t++){
-                 restricao1 +=  gama[vetor[k]][t];
-                    }
-
-                IloConstraint adicionarum = restricao1 == 1;
-                modelo1.add(adicionarum);
-                conjunto.insert(vetor[k]);
-
-         // Adicionar restricao fixando em zero
-
-        IloConstraintArray adicionarzero(env,N);
-
-        for(n=0; n< N; n++){
-
-            IloExpr restricao0 (env);
-                for(t=F[n]; t<=L[n]; t++){
-                 restricao0 +=  gama[n][t];
-                    }
-
-                    adicionarzero[n] = restricao0 == 0;
-
-                    if(conjunto.find(n) != conjunto.end()){  }
-                        else{ modelo1.add(adicionarzero[n]); }
-
-                            }
-
-
+                if (conjunto.find(n) == conjunto.end())
+                    modelo1.add(adicionarzero[n]);
+            }
 
             //Se com a adicao da restricao o problema for factivel
-            if(fase1.solve()){
+            if (fase1.solve()){
+                modelo.le(fase1, atual);
 
-
-            //Receber valor atual da variável y
-
-            for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-
-                    atualy[j][t] = fase1.getValue(y[j][t]);
-
-                    }
-                        }
-
-            //Receber valor atual da variável x
-           for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-                    for(t= 0; t<T; t++){
-
-                    atualx[j][t][t] = fase1.getValue(x[j][t][t]);
-
-                    }
-                        }
-                            }
-
-            //Receber valor atual da variável gama
-            for(n= 0; n<N; n++){
-                for(t= 0; t<T; t++){
-
-                    atualgama[n][t] = fase1.getValue(gama[n][t]);
-
-                    }
-                        }
-
-            //Receber valor atual da variável z
-                for(i= 0; i<J; i++){
-                    for(j= 0; j<J; j++){
-                        for(t= 0; t<T; t++){
-
-                            atualz[i][j][t] = fase1.getValue(z[i][j][t]);
-
-                            }
-                                }
-                                    }
-
-
-
-            //Comparar valor atual da solucao com o valor anterior
-            atualFO = fase1.getObjValue();
-            if(atualFO > MelhorFO){
-
-            MelhorFO = atualFO;
-            for(n=0; n<N; n++){ modelo1.remove(adicionarzero[n]);}
-
-            //Receber valor da variável y da melhor solucao
-
-            for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-
-                    melhory[j][t] = atualy[j][t];
-
-                    }
-                        }
-
-            //Receber valor da variável x da melhor solucao
-           for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-                    for(t= 0; t<T; t++){
-
-                    melhorx[j][t][t] = atualx[j][t][t];
-
-                    }
-                        }
-                            }
-
-            //Receber valor da variável gama da melhor solucao
-            for(n= 0; n<N; n++){
-                for(t= 0; t<T; t++){
-
-                    melhorgama[n][t] = atualgama[n][t];
-
-                    }
-                        }
-
-            //Receber valor da variável z da melhor solucao
-                for(i= 0; i<J; i++){
-                    for(j= 0; j<J; j++){
-                        for(t= 0; t<T; t++){
-
-                            melhorz[i][j][t] = atualz[i][j][t];
-
-                            }
-                                }
-                                    }
-
-
-
-                                                }
-
-            //Se a solucao piorar, remover a restricao adicionada
-            else{
-
-
-             for(n=0; n<N; n++){ modelo1.remove(adicionarzero[n]);}
-             modelo1.remove(adicionarum);
-             conjunto.erase(vetor[k]);
-
+                //Comparar valor atual da solucao com o valor anterior
+                double atualFO = fase1.getObjValue();
+                if (atualFO > melhorFO){
+                    melhorFO = atualFO;
+                    removeZeros(modelo1, adicionarzero);
+                    melhor = atual;
+                }
+                //Se a solucao piorar, remover a restricao adicionada
+                else {
+                    removeZeros(modelo1, adicionarzero);
+                    modelo1.remove(adicionarum);
+                    conjunto.erase(vetor[k]);
+                }
             }
-
-
-                    }
             //Se o problema for infactivel, remover a restricao recem adicionada
-            else{
-
-              for(n=0; n<N; n++){ modelo1.remove(adicionarzero[n]); }
-              modelo1.remove(adicionarum);
-              conjunto.erase(vetor[k]);
-
-                }
-
-
-                    }
-
-
-                     for(n=0; n<N; n++){
-                                for(t=0; t<T; t++){
-                                    if(melhorgama[n][t] >= 0.5){
-                                    gama[n][t].setLB(1);
-                                    gama[n][t].setUB(1);
-                                    }
-                                        }
-                                            }
-
-
-                            double tempo1 = execTime;
-                            temporestante = 3600 - tempo1;
-                            FILE *arq;
-                            arq = fopen(argv[2], "a");
-                            fprintf(arq, " Melhor solucao encontrada na FASE 1: %.f \n", MelhorFO);
-                            fprintf(arq, " Tempo de execucao da FASE 1: %.2f \n", tempo1);
-                            fclose(arq);
-
-
-
-IloCplex fase2(env);
-IloModel modelo2(env);
-
-
-
-//Funcao objetivo
-IloExpr fo2(env);
-
-            for( n=0;n<N; n++){
-                for( t= F[n];t<=L[n];t++){
-                fo2 += P[n][t]*gama[n][t];
-                            }
-                                }
-
-
-                    for ( j = 0 ; j < J ; j++ ){
-                         for ( t = 0 ; t < T; t++ ){
-
-                            for ( p=t+1 ; p< T  ; p++ ){
-                                fo2 += - h[j]*(p-t)*x[j][t][p];
-                                    }
-                                        }
-                                            }
-
-
-                for ( t = 0 ; t < T ; t++ ){
-                    for ( i = 0 ; i < J ; i++){
-                        for ( j = 0 ; j < J ; j++){
-                        fo2 += - sc[i][j]*z[i][j][t];
-                        }
-                            }
-                                }
-
-modelo2.add(IloMaximize(env, fo2));
-fo2.end();
-
- //Restrição 1
-
-IloExpr Expr1001(env);
-IloExpr Expr1002(env);
-    for ( j = 0 ; j < J ; j++ ){
-            for ( p = 0 ; p < T ; p++ ){
-
-                for ( t = myMax(0,p-sl[j]) ; t <= p; t++ ){
-                        Expr1001 += x[j][t][p];
-                                }
-
-                    for ( n = 0 ; n < N ; n++ ){
-                    Expr1002 += q[j][n]*gama[n][p];
-                    }
-            modelo2.add(Expr1001 == Expr1002);
-            Expr1001.end();
-            Expr1001 = IloExpr(env);
-            Expr1002.end();
-            Expr1002 = IloExpr(env);
+            else {
+                removeZeros(modelo1, adicionarzero);
+                modelo1.remove(adicionarum);
+                conjunto.erase(vetor[k]);
             }
-                }
-
-// Restrição 2
-IloExpr Expr1007(env);
-        for ( t = 0 ; t < T ; t++ ){
-			for ( i = 0 ; i < J ; i++ ){
-				for ( j = 0 ; j < J ; j++ ){
-						Expr1007 += st[i][j]*z[i][j][t];
-                                }
-                        }
-			for(j=0; j<J; j++){
-                for(p=0; p<T; p++){
-			     Expr1007 += a[j]*x[j][t][p] ;
-			     }
-			}
-                modelo2.add(Expr1007 <= C[t] );
-				Expr1007.end();
-				Expr1007 = IloExpr(env);
-
         }
-//   Restrição 3
-IloExpr Expr1008(env);
-        for ( t = 0 ; t < T ; t++ ){
-		for ( j = 0 ; j < J ; j++ ){
-						Expr1008 += y[j][t];
-					}
-						modelo2.add(Expr1008 == 1);
-						Expr1008.end();
-                        Expr1008 = IloExpr(env);
-                        }
 
-// Restrição 4
-IloExpr Expr1009(env);
-IloExpr Expr1010(env);
-		for ( t = 0 ; t < T ; t++ ){
-		for ( j = 0 ; j < J ; j++ ){
-            for ( i = 0 ; i < J ; i++ ){
-            if(i!=j){
-			Expr1009 += z[i][j][t] ;
-			Expr1010 += z[j][i][t] ;
-			}
-			}
-			modelo2.add(y[j][t] + Expr1009 == Expr1010 + y[j][t+1]);
-            Expr1009.end();
-            Expr1009 = IloExpr(env);
-            Expr1010.end();
-			Expr1010 = IloExpr(env);
-		}
-
-		}
-
-
-//  Restrição 5
-    IloExpr Expr1013(env);
-    IloExpr Expr1014(env);
-        for ( t = 0 ; t < T ; t++ ){
-			for ( j = 0 ; j < J ; j++ ){
-                    for ( i = 0 ; i < J ; i++ ){
-                            if(j!=i){
-							Expr1013 += z[i][j][t];
-                                    }
-                                        }
-                             for ( p = 0 ; p < T ; p++ ){
-                            Expr1014+= x[j][t][p] ;
-                            }
-                            for ( i = 0 ; i < J ; i++ ){
-                            modelo2.add(Expr1014 <= (C[t]/a[j])*(y[j][t] + Expr1013) -(st[i][j]/a[j])*Expr1013) ;
-                                                    }
-                                Expr1013.end();
-                                Expr1013 = IloExpr(env);
-                                Expr1014.end();
-                                Expr1014 = IloExpr(env);
-                                                    }
-
-
-                                                        }
-        //Restrição 6
-        for ( t = 0 ; t < T ; t++ ){
-			for ( i = 0 ; i < J ; i++ ){
-			if(j!=i){
-			for ( j = 0 ; j < J ; j++ ){
-
-				modelo2.add(V[j][t] >= V[i][t] + 1 - J*(1 - z[i][j][t]));
-                            }
-			}
-		}
-		}
-//Restrição 7
-IloExpr Expr1015(env);
-        for ( n = 0 ; n < N ; n++ ){
-						for( t = F[n] ; t <= L[n] ; t++ ){
-							Expr1015+= gama[n][t];
-						}
-						modelo2.add(Expr1015 <= 1);
-                        Expr1015.end();
-                        Expr1015 = IloExpr(env);
-
-					}
-
-  //Restrição 8
-  for ( n = 0 ; n < N ; n++ ){
-  for ( t = 0 ; t < T ; t++ ){
-            if(t< F[n] || t > L[n])
-				modelo2.add(gama[n][t] == 0);
-				}
-				}
-
-
-fase2.extract(modelo2);
-fase2.setParam(IloCplex::Param::TimeLimit, temporestante/4);
-fase2.use(logTimeCallback(env, startTime, nome));
-
-
-//Inicio da FASE 2
-
-
-
-                        if(fase2.solve()){
-
-            //Receber valor atual da variável y
-
-            for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-
-                    atualy[j][t] = fase2.getValue(y[j][t]);
-
-                    }
-                        }
-
-            //Receber valor atual da variável x
-           for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-                    for(t= 0; t<T; t++){
-
-                    atualx[j][t][t] = fase2.getValue(x[j][t][t]);
-
-                    }
-                        }
-                            }
-
-            //Receber valor atual da variável gama
-            for(n= 0; n<N; n++){
-                for(t= 0; t<T; t++){
-
-                    atualgama[n][t] = fase2.getValue(gama[n][t]);
-
-                    }
-                        }
-
-            //Receber valor atual da variável z
-                for(i= 0; i<J; i++){
-                    for(j= 0; j<J; j++){
-                        for(t= 0; t<T; t++){
-
-                            atualz[i][j][t] = fase2.getValue(z[i][j][t]);
-
-                            }
-                                }
-                                    }
-
-
-
-                                if(fase2.getObjValue() >= MelhorFO){
-                                        MelhorFO = fase2.getObjValue();
-
-
-            //Receber valor da variável y da melhor solucao
-
-            for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-
-                    melhory[j][t] = atualy[j][t];
-
-                    }
-                        }
-
-            //Receber valor da variável x da melhor solucao
-           for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-                    for(t= 0; t<T; t++){
-
-                    melhorx[j][t][t] = atualx[j][t][t];
-
-                    }
-                        }
-                            }
-
-            //Receber valor da variável gama da melhor solucao
-            for(n= 0; n<N; n++){
-                for(t= 0; t<T; t++){
-
-                    melhorgama[n][t] = atualgama[n][t];
-
-                    }
-                        }
-
-            //Receber valor da variável z da melhor solucao
-                for(i= 0; i<J; i++){
-                    for(j= 0; j<J; j++){
-                        for(t= 0; t<T; t++){
-
-                            melhorz[i][j][t] = atualz[i][j][t];
-
-                            }
-                                }
-                                    }
-
- //MELHORES PEDIDOS
-                                    for(n=0; n<N; n++){
-                                for(t=0; t<T; t++){
-                                    if(melhorgama[n][t] >= 0.5){
-                                    gama[n][t].setLB(1);
-                                    gama[n][t].setUB(1);
-                                    }
-                                        }
-                                            }
-
-                                                            }
-                                                                }
-
-         if(fase2.solve()){
-
-           //Receber valor atual da variável y
-
-            for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-
-                    atualy[j][t] = fase2.getValue(y[j][t]);
-
-                    }
-                        }
-
-            //Receber valor atual da variável x
-           for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-                    for(t= 0; t<T; t++){
-
-                    atualx[j][t][t] = fase2.getValue(x[j][t][t]);
-
-                    }
-                        }
-                            }
-
-            //Receber valor atual da variável gama
-            for(n= 0; n<N; n++){
-                for(t= 0; t<T; t++){
-
-                    atualgama[n][t] = fase2.getValue(gama[n][t]);
-
-                    }
-                        }
-
-            //Receber valor atual da variável z
-                for(i= 0; i<J; i++){
-                    for(j= 0; j<J; j++){
-                        for(t= 0; t<T; t++){
-
-                            atualz[i][j][t] = fase2.getValue(z[i][j][t]);
-
-                            }
-                                }
-                                    }
-
-                                if(fase2.getObjValue() >= MelhorFO){
-                                        MelhorFO = fase2.getObjValue();
-
-
-
-
-            //Receber valor da variável y da melhor solucao
-
-            for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-
-                    melhory[j][t] = atualy[j][t];
-
-                    }
-                        }
-
-            //Receber valor da variável x da melhor solucao
-           for(j= 0; j<J; j++){
-                for(t= 0; t<T; t++){
-                    for(t= 0; t<T; t++){
-
-                    melhorx[j][t][t] = atualx[j][t][t];
-
-                    }
-                        }
-                            }
-
-            //Receber valor da variável gama da melhor solucao
-            for(n= 0; n<N; n++){
-                for(t= 0; t<T; t++){
-
-                    melhorgama[n][t] = atualgama[n][t];
-
-                    }
-                        }
-
-            //Receber valor da variável z da melhor solucao
-                for(i= 0; i<J; i++){
-                    for(j= 0; j<J; j++){
-                        for(t= 0; t<T; t++){
-
-                            melhorz[i][j][t] = atualz[i][j][t];
-
-                            }
-                                }
-                                    }
-
-
-
-                            for(n=0; n<N; n++){
-                                for(t=0; t<T; t++){
-                                    gama[n][t].setLB(0);
-                                    gama[n][t].setUB(1);
-
-                            }
-                                }
-
-//MELHORES SEQUÊNCIAS
-                            for(j=0; j<J; j++){
-                                for(t=0; t<T; t++){
-                                    if(melhory[j][t] >= 0.5){
-                                    y[j][t].setLB(1);
-                                    y[j][t].setUB(1);
-                                    }
-                                        }
-                                            }
-
-                            for(i=0; i<J; i++){
-                             for(j=0; j<J; j++){
-                                for(t=0; t<T; t++){
-                                    if(melhorz[i][j][t] >= 0.5){
-                                    z[i][j][t].setLB(1);
-                                    z[i][j][t].setUB(1);
-                                    }
-                                        }
-                                            }
-                                                }
-                                                    }
-                                                        }
-
-
-
-                        if(fase2.solve()){
-                                    double tempo2 = execTime - tempo1;
-
-                                  if(fase2.getObjValue() >= MelhorFO){
-                                        MelhorFO = fase2.getObjValue();
-                                        FILE *arq;
-                                        arq = fopen(argv[2], "a");
-                                        fprintf(arq, " Melhor solucao encontrada na FASE 2: %.f \n", MelhorFO);
-                                        fprintf(arq, " Tempo de execucao da FASE 2: %.2f \n", tempo2);
-                                        fclose(arq);
-
-
-                                  }
-                                  else{
-
-                                        FILE *arq;
-                                        arq = fopen(argv[2], "a");
-                                        fprintf(arq, " Melhor solucao encontrada na FASE 2: %.f \n", MelhorFO);
-                                        fprintf(arq, " Tempo de execucao da FASE 2: %.2f \n", tempo2);
-                                        fclose(arq);
-
-
-                                   }
-
-                                            }
-                                            else{
-                                        double tempo2 = execTime - tempo1;
-                                        FILE *arq;
-                                        arq = fopen(argv[2], "a");
-                                        fprintf(arq, " Melhor solucao encontrada na FASE 2: %.f \n", MelhorFO);
-                                        fprintf(arq, " Tempo de execucao da FASE 2: %.2f \n", tempo2);
-                                        fclose(arq);
-
-
-                                   }
-
-
-
-
-
-
-} // fim do try
-
-catch(IloException& ex) {
-cerr << "ERRO: " << ex << endl;
-}
-catch(...) {
-cerr << "ERRO!" << endl;
-}
-
-env.end();
-return 0;
-
+        modelo.fixaPedidos(melhor);
+
+        double tempo1 = relogio.decorrido();
+
+        printf(" Melhor solucao encontrada na FASE 1: %.f \n", melhorFO);
+        printf(" Tempo de execucao da FASE 1: %.2f \n", tempo1);
+
+        fase2(tempo1);
+    }
+};
+
+int main(int argc, char **argv){
+    IloEnv env;
+
+    try{
+        Instancia instancia(env, argv[1]);
+        Modelo modelo(env, instancia);
+        HeuristicaM4 heuristica(env, instancia, modelo);
+        heuristica.executa();
+    }
+    catch(IloException& ex) {
+        cerr << "ERRO: " << ex << endl;
+    }
+    catch(...) {
+        cerr << "ERRO!" << endl;
+    }
+
+    env.end();
+    return 0;
 }
